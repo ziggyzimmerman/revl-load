@@ -95,7 +95,7 @@ For each exercise, compute the recommended weight in kg:
 - If tier (black/grey/white):
   * black ≈ 80-85% 1RM, grey ≈ 65-75% 1RM, white ≈ 50-60% 1RM
   * For dumbbell/KB where no 1RM applies, give a sensible range based on tier
-- Round barbell weights to nearest 2.5kg, dumbbell/KB to nearest 2kg
+- Round ALL barbell weights to the nearest 2.5kg (e.g. 79kg → 80kg, 81kg → 82.5kg), dumbbell/KB to nearest 2kg
 
 Respond ONLY with valid JSON, no markdown, no explanation:
 {"exercises":[{"name":"Back Squat","type":"barbell","prescription":"75%","sets":"4","reps":"5","recommendedKg":75,"waveKgs":[60,70,75,85,90,92.5],"note":"Wave loading across 6 rounds"}],"workoutNotes":"brief summary"}
@@ -152,13 +152,45 @@ function PlateViz({ plates }) {
   );
 }
 
-function PlateRow({ label, kg, barbellKg, availablePlates }) {
+function PlateRow({ label, kg, barbellKg, availablePlates, onKgChange }) {
+  const [editing, setEditing] = useState(false);
+  const [inputVal, setInputVal] = useState(String(kg));
   const pd = calculatePlates(kg, barbellKg, availablePlates);
+
+  const commit = () => {
+    const parsed = parseFloat(inputVal);
+    if (!isNaN(parsed) && parsed > 0) onKgChange(parsed);
+    else setInputVal(String(kg));
+    setEditing(false);
+  };
+
+  const nudge = (delta) => onKgChange(Math.max(0, Math.round((kg + delta) * 10) / 10));
+
   return (
     <div style={{ marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <span style={{ fontSize: 12, color: '#888' }}>{label}</span>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, color: '#00d4aa' }}>{kg}kg</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => nudge(-2.5)} style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+          {editing ? (
+            <input
+              autoFocus
+              type="number"
+              value={inputVal}
+              onChange={e => setInputVal(e.target.value)}
+              onBlur={commit}
+              onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setInputVal(String(kg)); setEditing(false); } }}
+              style={{ width: 64, padding: '3px 6px', background: 'rgba(0,212,170,0.1)', border: '1px solid #00d4aa', borderRadius: 6, color: '#00d4aa', fontSize: 16, fontWeight: 700, fontFamily: "'Barlow Condensed', sans-serif", textAlign: 'center', outline: 'none' }}
+            />
+          ) : (
+            <span
+              onClick={() => { setInputVal(String(kg)); setEditing(true); }}
+              title="Tap to edit"
+              style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700, color: '#00d4aa', minWidth: 52, textAlign: 'center', cursor: 'text', borderBottom: '1px dashed rgba(0,212,170,0.4)', paddingBottom: 1 }}
+            >{kg}kg</span>
+          )}
+          <button onClick={() => nudge(2.5)} style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+        </div>
       </div>
       {pd.plates.length > 0 ? (
         <>
@@ -181,7 +213,10 @@ function PlateRow({ label, kg, barbellKg, availablePlates }) {
 function ExerciseCard({ ex, barbellKg, availablePlates }) {
   const [expanded, setExpanded] = useState(true);
   const isWave = ex.waveKgs && ex.waveKgs.length > 1;
-  const displayKg = Array.isArray(ex.recommendedKg) ? ex.recommendedKg[0] : ex.recommendedKg;
+  const initKg = Array.isArray(ex.recommendedKg) ? ex.recommendedKg[0] : ex.recommendedKg;
+  const [waveKgs, setWaveKgs] = useState(isWave ? ex.waveKgs : [initKg]);
+
+  const updateWaveKg = (i, val) => setWaveKgs(prev => prev.map((k, idx) => idx === i ? val : k));
 
   return (
     <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '16px 20px', marginBottom: 12 }}>
@@ -195,17 +230,21 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
             </div>
           )}
         </div>
-        {ex.type === 'barbell' && (
+        {ex.type === 'barbell' && isWave && (
           <div style={{ textAlign: 'right', marginLeft: 12 }}>
-            {isWave
-              ? <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16, fontWeight: 700, color: '#00d4aa', lineHeight: 1.3 }}>{ex.waveKgs.join(' → ')}<br/><span style={{ fontSize: 11, color: '#888', fontWeight: 400 }}>kg</span></div>
-              : <><div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{displayKg}</div><div style={{ fontSize: 12, color: '#888' }}>kg</div></>
-            }
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, fontWeight: 700, color: '#00d4aa', lineHeight: 1.4 }}>{waveKgs.join(' → ')}</div>
+            <div style={{ fontSize: 11, color: '#888' }}>kg</div>
+          </div>
+        )}
+        {ex.type === 'barbell' && !isWave && (
+          <div style={{ textAlign: 'right', marginLeft: 12 }}>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{waveKgs[0]}</div>
+            <div style={{ fontSize: 12, color: '#888' }}>kg</div>
           </div>
         )}
         {ex.type !== 'barbell' && (
           <div style={{ textAlign: 'right', marginLeft: 12 }}>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{displayKg}</div>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{waveKgs[0]}</div>
             <div style={{ fontSize: 12, color: '#888' }}>kg</div>
           </div>
         )}
@@ -219,19 +258,19 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
                 <span style={{ fontSize: 11, color: '#888', letterSpacing: 1 }}>PLATE LOADING PER ROUND</span>
-                <span style={{ fontSize: 12, color: '#00d4aa' }}>{expanded ? '▲ collapse' : '▼ expand'}</span>
+                <span style={{ fontSize: 12, color: '#00d4aa' }}>{expanded ? '▲ hide' : '▼ show'}</span>
               </div>
-              {expanded && ex.waveKgs.map((kg, i) => (
-                <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} barbellKg={barbellKg} availablePlates={availablePlates} />
+              {expanded && waveKgs.map((kg, i) => (
+                <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(i, v)} />
               ))}
             </>
           ) : (
-            <PlateRow label="Load" kg={displayKg} barbellKg={barbellKg} availablePlates={availablePlates} />
+            <PlateRow label="Load" kg={waveKgs[0]} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(0, v)} />
           )}
         </div>
       )}
 
-      {ex.type !== 'barbell' && <div style={{ marginTop: 8, fontSize: 13, color: '#888' }}>{ex.type === 'dumbbell' ? '🏋️ Dumbbell' : '⚫ Kettlebell'} — {displayKg}kg each hand</div>}
+      {ex.type !== 'barbell' && <div style={{ marginTop: 8, fontSize: 13, color: '#888' }}>{ex.type === 'dumbbell' ? '🏋️ Dumbbell' : '⚫ Kettlebell'} — {waveKgs[0]}kg each hand</div>}
     </div>
   );
 }
