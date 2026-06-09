@@ -35,7 +35,7 @@ function saveProfile(p) {
 const DEFAULT_PROFILE = {
   tier: 'grey',
   barbellWeight: 20,
-  availablePlates: [20, 15, 10, 5, 2.5, 1.25],
+  availablePlates: [20, 15, 10, 5, 2.5, 1.25, 1, 0.5],
   oneRMs: {
     'Back Squat': 100, 'Front Squat': 80, 'Deadlift': 120,
     'Romanian Deadlift': 100, 'Bench Press': 80, 'Overhead Press': 55,
@@ -152,46 +152,67 @@ function PlateViz({ plates }) {
   );
 }
 
-function PlateRow({ label, kg, barbellKg, availablePlates, onKgChange }) {
+function EditableValue({ value, onChange, color, suffix, fontSize }) {
   const [editing, setEditing] = useState(false);
-  const [inputVal, setInputVal] = useState(String(kg));
-  const pd = calculatePlates(kg, barbellKg, availablePlates);
-
+  const [inputVal, setInputVal] = useState(String(value));
   const commit = () => {
     const parsed = parseFloat(inputVal);
-    if (!isNaN(parsed) && parsed > 0) onKgChange(parsed);
-    else setInputVal(String(kg));
+    if (!isNaN(parsed) && parsed > 0) onChange(parsed);
+    else setInputVal(String(value));
     setEditing(false);
   };
+  if (editing) return (
+    <input autoFocus type="number" value={inputVal}
+      onChange={e => setInputVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setInputVal(String(value)); setEditing(false); } }}
+      style={{ width: 72, padding: '2px 6px', background: `rgba(${color === '#00d4aa' ? '0,212,170' : '230,183,0'},0.1)`, border: `1px solid ${color}`, borderRadius: 6, color, fontSize: fontSize || 16, fontWeight: 700, fontFamily: "'Barlow Condensed', sans-serif", textAlign: 'center', outline: 'none' }}
+    />
+  );
+  return (
+    <span onClick={() => { setInputVal(String(value)); setEditing(true); }}
+      style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: fontSize || 16, fontWeight: 700, color, cursor: 'text', borderBottom: `1px dashed ${color}88`, paddingBottom: 1 }}>
+      {value}{suffix}
+    </span>
+  );
+}
 
-  const nudge = (delta) => onKgChange(Math.max(0, Math.round((kg + delta) * 10) / 10));
+function PlateRow({ label, kg, pct, oneRM, barbellKg, availablePlates, onKgChange, onOneRMChange }) {
+  const pd = calculatePlates(kg, barbellKg, availablePlates);
+  const nudge = (delta) => onKgChange(Math.max(0, Math.round((kg + delta) * 100) / 100));
+  // implied 1RM from current kg and pct
+  const impliedRM = pct > 0 ? Math.round((kg / pct) * 100 * 10) / 10 : null;
 
   return (
-    <div style={{ marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <span style={{ fontSize: 12, color: '#888' }}>{label}</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <button onClick={() => nudge(-2.5)} style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-          {editing ? (
-            <input
-              autoFocus
-              type="number"
-              value={inputVal}
-              onChange={e => setInputVal(e.target.value)}
-              onBlur={commit}
-              onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setInputVal(String(kg)); setEditing(false); } }}
-              style={{ width: 64, padding: '3px 6px', background: 'rgba(0,212,170,0.1)', border: '1px solid #00d4aa', borderRadius: 6, color: '#00d4aa', fontSize: 16, fontWeight: 700, fontFamily: "'Barlow Condensed', sans-serif", textAlign: 'center', outline: 'none' }}
+    <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+      {/* Row header: label + % + implied 1RM */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: '#888', minWidth: 56 }}>{label}</span>
+        {pct > 0 && (
+          <span style={{ fontSize: 11, color: '#666', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '2px 6px' }}>
+            {Math.round(pct * 100)}%
+          </span>
+        )}
+        {impliedRM && (
+          <span style={{ fontSize: 11, color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
+            implied 1RM:
+            <EditableValue
+              value={impliedRM}
+              onChange={newRM => onOneRMChange(newRM)}
+              color="#e6b700"
+              suffix="kg"
+              fontSize={13}
             />
-          ) : (
-            <span
-              onClick={() => { setInputVal(String(kg)); setEditing(true); }}
-              title="Tap to edit"
-              style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700, color: '#00d4aa', minWidth: 52, textAlign: 'center', cursor: 'text', borderBottom: '1px dashed rgba(0,212,170,0.4)', paddingBottom: 1 }}
-            >{kg}kg</span>
-          )}
-          <button onClick={() => nudge(2.5)} style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
-        </div>
+          </span>
+        )}
       </div>
+      {/* Weight control */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <button onClick={() => nudge(-2.5)} style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+        <EditableValue value={kg} onChange={onKgChange} color="#00d4aa" suffix="kg" fontSize={20} />
+        <button onClick={() => nudge(2.5)} style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#ccc', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+      </div>
+      {/* Plate viz */}
       {pd.plates.length > 0 ? (
         <>
           <div style={{ fontSize: 11, color: '#888' }}>
@@ -216,7 +237,22 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
   const initKg = Array.isArray(ex.recommendedKg) ? ex.recommendedKg[0] : ex.recommendedKg;
   const [waveKgs, setWaveKgs] = useState(isWave ? ex.waveKgs : [initKg]);
 
+  // Parse percentages from prescription string e.g. "60-70-75-85-90-92.5%" or "75%"
+  const wavePcts = (() => {
+    if (!ex.prescription) return waveKgs.map(() => 0);
+    const nums = ex.prescription.match(/[\d.]+/g);
+    if (!nums) return waveKgs.map(() => 0);
+    const pcts = nums.map(n => parseFloat(n) / 100);
+    // Pad or trim to match waveKgs length
+    return waveKgs.map((_, i) => pcts[i] || pcts[pcts.length - 1] || 0);
+  })();
+
   const updateWaveKg = (i, val) => setWaveKgs(prev => prev.map((k, idx) => idx === i ? val : k));
+  // When 1RM changes for round i: keep pct, recalculate kg
+  const updateOneRM = (i, newRM) => {
+    const pct = wavePcts[i];
+    if (pct > 0) updateWaveKg(i, Math.round((newRM * pct) / 2.5) * 2.5);
+  };
 
   return (
     <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '16px 20px', marginBottom: 12 }}>
@@ -230,24 +266,12 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
             </div>
           )}
         </div>
-        {ex.type === 'barbell' && isWave && (
-          <div style={{ textAlign: 'right', marginLeft: 12 }}>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, fontWeight: 700, color: '#00d4aa', lineHeight: 1.4 }}>{waveKgs.join(' → ')}</div>
-            <div style={{ fontSize: 11, color: '#888' }}>kg</div>
-          </div>
-        )}
-        {ex.type === 'barbell' && !isWave && (
-          <div style={{ textAlign: 'right', marginLeft: 12 }}>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{waveKgs[0]}</div>
-            <div style={{ fontSize: 12, color: '#888' }}>kg</div>
-          </div>
-        )}
-        {ex.type !== 'barbell' && (
-          <div style={{ textAlign: 'right', marginLeft: 12 }}>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{waveKgs[0]}</div>
-            <div style={{ fontSize: 12, color: '#888' }}>kg</div>
-          </div>
-        )}
+        <div style={{ textAlign: 'right', marginLeft: 12 }}>
+          {ex.type === 'barbell' && isWave
+            ? <><div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 700, color: '#00d4aa', lineHeight: 1.4 }}>{waveKgs.join(' → ')}</div><div style={{ fontSize: 11, color: '#888' }}>kg</div></>
+            : <><div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 36, fontWeight: 800, color: '#00d4aa', lineHeight: 1 }}>{waveKgs[0]}</div><div style={{ fontSize: 12, color: '#888' }}>kg</div></>
+          }
+        </div>
       </div>
 
       {ex.note && <div style={{ fontSize: 12, color: '#999', marginTop: 6, fontStyle: 'italic' }}>{ex.note}</div>}
@@ -261,11 +285,11 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
                 <span style={{ fontSize: 12, color: '#00d4aa' }}>{expanded ? '▲ hide' : '▼ show'}</span>
               </div>
               {expanded && waveKgs.map((kg, i) => (
-                <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(i, v)} />
+                <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} pct={wavePcts[i]} oneRM={wavePcts[i] > 0 ? Math.round(kg / wavePcts[i] * 10) / 10 : null} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(i, v)} onOneRMChange={v => updateOneRM(i, v)} />
               ))}
             </>
           ) : (
-            <PlateRow label="Load" kg={waveKgs[0]} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(0, v)} />
+            <PlateRow label="Load" kg={waveKgs[0]} pct={wavePcts[0]} oneRM={wavePcts[0] > 0 ? Math.round(waveKgs[0] / wavePcts[0] * 10) / 10 : null} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(0, v)} onOneRMChange={v => updateOneRM(0, v)} />
           )}
         </div>
       )}
@@ -295,8 +319,42 @@ function ProfileEditor({ profile, onSave, onClose }) {
         </select>
         <label style={S.label}>BARBELL WEIGHT (kg)</label>
         <input type="number" value={local.barbellWeight} onChange={e => setLocal(p => ({ ...p, barbellWeight: parseFloat(e.target.value) || 20 }))} style={S.input} />
-        <label style={S.label}>AVAILABLE PLATES (kg per side, comma-separated)</label>
-        <input type="text" value={local.availablePlates.join(', ')} onChange={e => setLocal(p => ({ ...p, availablePlates: e.target.value.split(',').map(x => parseFloat(x.trim())).filter(x => !isNaN(x) && x > 0) }))} style={S.input} />
+        <label style={S.label}>AVAILABLE PLATES (kg per side)</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {[...local.availablePlates].sort((a,b) => b - a).map(p => (
+            <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(0,212,170,0.1)', border: '1px solid rgba(0,212,170,0.3)', borderRadius: 6, padding: '4px 8px' }}>
+              <span style={{ color: '#00d4aa', fontSize: 13, fontWeight: 700 }}>{p}kg</span>
+              <button onClick={() => setLocal(pr => ({ ...pr, availablePlates: pr.availablePlates.filter(x => x !== p) }))}
+                style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            type="number"
+            step="0.25"
+            placeholder="e.g. 0.5"
+            id="newPlateInput"
+            style={{ ...S.input, margin: 0, flex: 1 }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const val = parseFloat(e.target.value);
+                if (!isNaN(val) && val > 0 && !local.availablePlates.includes(val)) {
+                  setLocal(p => ({ ...p, availablePlates: [...p.availablePlates, val] }));
+                  e.target.value = '';
+                }
+              }
+            }}
+          />
+          <button onClick={() => {
+            const input = document.getElementById('newPlateInput');
+            const val = parseFloat(input.value);
+            if (!isNaN(val) && val > 0 && !local.availablePlates.includes(val)) {
+              setLocal(p => ({ ...p, availablePlates: [...p.availablePlates, val] }));
+              input.value = '';
+            }
+          }} style={{ padding: '10px 14px', background: 'rgba(0,212,170,0.15)', border: '1px solid #00d4aa', borderRadius: 8, color: '#00d4aa', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>+ Add</button>
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '20px 0 10px' }}>
           <label style={{ ...S.label, margin: 0 }}>1RM VALUES (kg)</label>
           <button onClick={addLift} style={{ padding: '4px 10px', background: 'rgba(0,212,170,0.15)', border: '1px solid #00d4aa', borderRadius: 6, color: '#00d4aa', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>+ Add lift</button>
