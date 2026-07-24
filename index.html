@@ -23,20 +23,11 @@
 <script type="text/babel">
 const { useState, useRef, useCallback, useEffect } = React;
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
-const STORAGE_KEY = 'revl-profile-v1';
-function loadProfile() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; } }
-function saveProfile(p) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); } catch {} }
-
-const DEFAULT_PROFILE = {
-  barbellWeight: 20,
-  availablePlates: [20, 15, 10, 5, 2.5, 1.25, 1, 0.5],
-  oneRMs: {
-    'Back Squat': 100, 'Front Squat': 80, 'Deadlift': 120,
-    'Romanian Deadlift': 100, 'Bench Press': 80, 'Overhead Press': 55,
-    'Barbell Row': 80, 'Power Clean': 70, 'Hang Power Clean': 65, 'Push Press': 65,
-  },
-};
+// ─── Storage (barbell + plates only) ─────────────────────────────────────────
+const STORAGE_KEY = 'revl-equipment-v1';
+function loadEquipment() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; } }
+function saveEquipment(e) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(e)); } catch {} }
+const DEFAULT_EQUIPMENT = { barbellWeight: 20, availablePlates: [20, 15, 10, 5, 2.5, 1.25, 1, 0.5] };
 
 // ─── Plate math ───────────────────────────────────────────────────────────────
 function calculatePlates(targetKg, barbellKg, availablePlates) {
@@ -46,23 +37,32 @@ function calculatePlates(targetKg, barbellKg, availablePlates) {
   let remaining = perSide;
   const plates = [];
   for (const p of sorted) {
-    while (remaining >= p - 0.001) {
-      plates.push(p);
-      remaining -= p;
-      remaining = Math.round(remaining * 1000) / 1000;
-    }
+    while (remaining >= p - 0.001) { plates.push(p); remaining -= p; remaining = Math.round(remaining * 1000) / 1000; }
   }
   const actualPerSide = perSide - remaining;
   const actualTotal = Math.round((barbellKg + actualPerSide * 2) * 100) / 100;
   return { plates, actualTotal, deficit: Math.round(remaining * 2 * 100) / 100 };
 }
 
-// ─── Image conversion ─────────────────────────────────────────────────────────
-async function toJpegBase64(dataUrl) {
+// ─── Percentage parsing ───────────────────────────────────────────────────────
+function parsePrescription(prescription, oneRM) {
+  if (!prescription || !oneRM) return { pcts: [], kgs: [] };
+  const nums = (prescription.match(/[\d.]+/g) || []).map(Number);
+  if (!nums.length) return { pcts: [], kgs: [] };
+  // Expand X-Y range into 5% steps if exactly 2 nums and spread > 10
+  let pctList = (nums.length === 2 && nums[1] - nums[0] > 10)
+    ? (() => { const r = []; for (let p = nums[0]; p <= nums[1] + 0.001; p += 5) r.push(Math.round(p * 10) / 10); return r; })()
+    : nums;
+  const pcts = pctList.map(n => n / 100);
+  const kgs = pcts.map(p => Math.round((oneRM * p) / 2.5) * 2.5);
+  return { pcts, kgs };
+}
+
+// ─── Image compression ────────────────────────────────────────────────────────
+function toJpegBase64(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      // Start at 600px max dimension — REVL screens are text-heavy, don't need high res
       const MAX_DIM = 600;
       let { naturalWidth: w, naturalHeight: h } = img;
       if (w > MAX_DIM || h > MAX_DIM) {
@@ -72,11 +72,10 @@ async function toJpegBase64(dataUrl) {
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      // Try decreasing quality until base64 is under 400KB
       const TARGET = 400_000;
       for (let q = 0.7; q >= 0.2; q -= 0.1) {
         const b64 = canvas.toDataURL('image/jpeg', q).split(',')[1];
-        if (b64.length < TARGET || q <= 0.2) { resolve(b64); return; }
+        if (b64.length < TARGET || q <= 0.21) { resolve(b64); return; }
       }
     };
     img.onerror = () => reject(new Error('Failed to load image'));
@@ -84,48 +83,39 @@ async function toJpegBase64(dataUrl) {
   });
 }
 
-// ─── API ──────────────────────────────────────────────────────────────────────
-async function analyzeWorkout(imageDataUrl, profile) {
+// ─── Step 1 API: read exercises + prescriptions only, no kg calculation ───────
+async function readWorkout(imageDataUrl) {
   const finalBase64 = await toJpegBase64(imageDataUrl);
+  const systemPrompt = `You are a strength training assistant reading a REVL gym workout screen.
 
-  const systemPrompt = `You are a strength training assistant that reads REVL gym workout screens.
-
-ONLY extract exercises that have an explicit percentage-based weight prescription (e.g. "@ 75%", "60-70-75%", "85% 1RM").
-Ignore all other exercises — do not suggest weights for tier-based (black/grey/white) or unspecified exercises.
+ONLY extract exercises with an explicit percentage-based weight prescription (e.g. "@ 75%", "50-70%", "60-70-75-85-90-92.5%").
+Ignore all other exercises entirely.
 
 For each qualifying exercise return:
-- name: standardized exercise name (e.g. "Back Squat", "Deadlift")
+- name: standardized exercise name (e.g. "Back Squat", "Bench Press")
 - type: "barbell" | "dumbbell" | "kettlebell"
-- prescription: the percentage string as written (e.g. "75%" or "60-70-75-85-90-92.5%")
-- sets and reps if visible
-- waveKgs: array of recommended kg values, one per percentage, computed from the user's 1RM profile below
-- recommendedKg: the first value in waveKgs
+- prescription: the percentage string exactly as written (e.g. "50-70%" or "75%")
+- sets: sets if visible
+- reps: reps if visible
 
-User 1RMs (kg): ${JSON.stringify(profile.oneRMs)}
-
-Rounding rules:
-- Round ALL barbell weights to nearest 2.5kg (e.g. 79kg → 80kg, 77.5kg → 77.5kg)
-- Round dumbbell/KB to nearest 2kg
-
-If the exercise name doesn't match a 1RM in the profile, make a reasonable estimate based on similar lifts.
+Do NOT calculate any weights — the user will provide their 1RM separately.
 
 Respond ONLY with valid JSON, no markdown:
-{"exercises":[{"name":"Back Squat","type":"barbell","prescription":"60-70-75-85-90-92.5%","sets":"6","reps":"varies","waveKgs":[60,70,75,85,90,92.5],"recommendedKg":60,"note":"Wave loading across 6 rounds from 100kg 1RM"}],"workoutNotes":"brief one-line session summary"}`;
+{"exercises":[{"name":"Bench Press","type":"barbell","prescription":"50-70%","sets":"6","reps":"varies"}],"workoutNotes":"brief one-line session summary"}`;
 
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
+      max_tokens: 600,
       system: systemPrompt,
       messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: finalBase64 } },
-        { type: 'text', text: 'Analyze this REVL workout screen and return JSON for percentage-based exercises only.' }
+        { type: 'text', text: 'Extract percentage-based exercises only. Return JSON.' }
       ]}]
     })
   });
-
   const rawText = await response.text();
   let data;
   try { data = JSON.parse(rawText); } catch { throw new Error(`Server error ${response.status}: ${rawText.slice(0, 200)}`); }
@@ -161,9 +151,7 @@ function PlateViz({ plates }) {
 function EditableValue({ value, onChange, color, suffix, fontSize }) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState(String(value));
-
   useEffect(() => { if (!editing) setInputVal(String(value)); }, [value, editing]);
-
   const commit = () => {
     const parsed = parseFloat(inputVal);
     if (!isNaN(parsed) && parsed > 0) onChange(parsed);
@@ -190,38 +178,27 @@ function EditableValue({ value, onChange, color, suffix, fontSize }) {
 function PlateRow({ label, kg, pct, barbellKg, availablePlates, onKgChange, onOneRMChange }) {
   const pd = calculatePlates(kg, barbellKg, availablePlates);
   const nudge = delta => {
-    // Snap to nearest 2.5kg grid after nudge, so e.g. 38.75 + 2.5 → 40 not 41.25
     const snapped = Math.round(kg / 2.5) * 2.5;
     const next = delta > 0 ? snapped + 2.5 : snapped - 2.5;
-    onKgChange(Math.max(0, Math.round(next * 100) / 100));
+    onKgChange(Math.max(0, next));
   };
-  // pct stored as decimal e.g. 0.75 — implied 1RM = kg / pct
   const impliedRM = pct > 0 ? Math.round(kg / pct * 10) / 10 : null;
-
   return (
     <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-      {/* Label row: round label + % badge + implied 1RM */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: '#888', minWidth: 56 }}>{label}</span>
-        {pct > 0 && (
-          <span style={{ fontSize: 11, color: '#aaa', background: 'rgba(255,255,255,0.07)', borderRadius: 4, padding: '2px 7px', fontWeight: 700 }}>
-            {Math.round(pct * 100)}%
-          </span>
-        )}
+        {pct > 0 && <span style={{ fontSize: 11, color: '#aaa', background: 'rgba(255,255,255,0.07)', borderRadius: 4, padding: '2px 7px', fontWeight: 700 }}>{Math.round(pct * 100)}%</span>}
         {impliedRM !== null && (
           <span style={{ fontSize: 11, color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
-            implied 1RM:
-            <EditableValue value={impliedRM} onChange={onOneRMChange} color="#e6b700" suffix="kg" fontSize={13} />
+            implied 1RM: <EditableValue value={impliedRM} onChange={onOneRMChange} color="#e6b700" suffix="kg" fontSize={13} />
           </span>
         )}
       </div>
-      {/* Weight control */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <button onClick={() => nudge(-2.5)} style={{ width: 32, height: 32, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 7, color: '#ccc', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
         <EditableValue value={kg} onChange={onKgChange} color="#00d4aa" suffix="kg" fontSize={22} />
         <button onClick={() => nudge(2.5)} style={{ width: 32, height: 32, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 7, color: '#ccc', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
       </div>
-      {/* Plates */}
       {pd.plates.length > 0 ? (
         <>
           <div style={{ fontSize: 11, color: '#888' }}>
@@ -229,51 +206,28 @@ function PlateRow({ label, kg, pct, barbellKg, availablePlates, onKgChange, onOn
             {pd.deficit > 0 && <span style={{ color: '#e74c3c', marginLeft: 6 }}>(closest: {pd.actualTotal}kg)</span>}
           </div>
           <PlateViz plates={pd.plates} />
-          <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
-            Bar {barbellKg}kg + {pd.plates.reduce((a, b) => a + b, 0) * 2}kg = {pd.actualTotal}kg
-          </div>
+          <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>Bar {barbellKg}kg + {pd.plates.reduce((a, b) => a + b, 0) * 2}kg = {pd.actualTotal}kg</div>
         </>
-      ) : (
-        <div style={{ fontSize: 11, color: '#666' }}>Bar only ({barbellKg}kg)</div>
-      )}
+      ) : <div style={{ fontSize: 11, color: '#666' }}>Bar only ({barbellKg}kg)</div>}
     </div>
   );
 }
 
 // ─── ExerciseCard ─────────────────────────────────────────────────────────────
-function ExerciseCard({ ex, barbellKg, availablePlates }) {
+function ExerciseCard({ ex, oneRM, barbellKg, availablePlates }) {
   const [expanded, setExpanded] = useState(true);
-  const initKg = Array.isArray(ex.recommendedKg) ? ex.recommendedKg[0] : ex.recommendedKg;
-  const initWave = ex.waveKgs && ex.waveKgs.length > 0 ? ex.waveKgs : [initKg];
-
-  // Parse percentages — expand ranges like "50-70%" into 5% steps
-  const parsePcts = (prescription, referenceWave) => {
-    if (!prescription) return { pcts: referenceWave.map(() => 0), kgs: referenceWave };
-    const nums = (prescription.match(/[\d.]+/g) || []).map(n => parseFloat(n));
-    if (!nums.length) return { pcts: referenceWave.map(() => 0), kgs: referenceWave };
-    let pctList = (nums.length === 2 && (nums[1] - nums[0]) > 10)
-      ? (() => { const r = []; for (let p = nums[0]; p <= nums[1] + 0.001; p += 5) r.push(Math.round(p * 10) / 10); return r; })()
-      : nums;
-    const pcts = pctList.map(n => n / 100);
-    const firstPct = pcts[0];
-    const impliedRM = firstPct > 0 ? referenceWave[0] / firstPct : null;
-    const kgs = pcts.map(p => impliedRM ? Math.round((impliedRM * p) / 2.5) * 2.5 : referenceWave[0]);
-    return { pcts, kgs };
-  };
-
-  const { pcts: wavePcts, kgs: initExpanded } = parsePcts(ex.prescription, initWave);
-  const [waveKgs, setWaveKgs] = useState(initExpanded);
+  const { pcts, kgs: initKgs } = parsePrescription(ex.prescription, oneRM);
+  const [waveKgs, setWaveKgs] = useState(initKgs);
   const isWave = waveKgs.length > 1;
 
   const updateWaveKg = (i, val) => setWaveKgs(prev => prev.map((k, idx) => idx === i ? val : k));
   const updateOneRM = (i, newRM) => {
-    const pct = wavePcts[i];
+    const pct = pcts[i];
     if (pct > 0) updateWaveKg(i, Math.round((newRM * pct) / 2.5) * 2.5);
   };
 
   return (
     <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '16px 20px', marginBottom: 12 }}>
-      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>{ex.name.toUpperCase()}</div>
@@ -289,10 +243,6 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
           }
         </div>
       </div>
-
-      {ex.note && <div style={{ fontSize: 12, color: '#999', marginTop: 6, fontStyle: 'italic' }}>{ex.note}</div>}
-
-      {/* Plate loading */}
       <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
         {isWave ? (
           <>
@@ -301,136 +251,169 @@ function ExerciseCard({ ex, barbellKg, availablePlates }) {
               <span style={{ fontSize: 12, color: '#00d4aa' }}>{expanded ? '▲ hide' : '▼ show'}</span>
             </div>
             {expanded && waveKgs.map((kg, i) => (
-              <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} pct={wavePcts[i]} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(i, v)} onOneRMChange={v => updateOneRM(i, v)} />
+              <PlateRow key={i} label={`Round ${i + 1}`} kg={kg} pct={pcts[i] || 0} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(i, v)} onOneRMChange={v => updateOneRM(i, v)} />
             ))}
           </>
         ) : (
-          <PlateRow label="Load" kg={waveKgs[0]} pct={wavePcts[0]} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(0, v)} onOneRMChange={v => updateOneRM(0, v)} />
+          <PlateRow label="Load" kg={waveKgs[0]} pct={pcts[0] || 0} barbellKg={barbellKg} availablePlates={availablePlates} onKgChange={v => updateWaveKg(0, v)} onOneRMChange={v => updateOneRM(0, v)} />
         )}
       </div>
     </div>
   );
 }
 
-// ─── ProfileEditor ────────────────────────────────────────────────────────────
-function ProfileEditor({ profile, onSave, onClose }) {
-  const [local, setLocal] = useState(() => JSON.parse(JSON.stringify(profile)));
-  const updateRM = (k, v) => setLocal(p => ({ ...p, oneRMs: { ...p.oneRMs, [k]: parseFloat(v) || 0 } }));
-  const addLift = () => { const n = prompt('Lift name:'); if (n) setLocal(p => ({ ...p, oneRMs: { ...p.oneRMs, [n]: 60 } })); };
-  const removeLift = k => setLocal(p => { const r = { ...p.oneRMs }; delete r[k]; return { ...p, oneRMs: r }; });
+// ─── 1RM + Bar Input Form ─────────────────────────────────────────────────────
+function OneRMForm({ exercises, savedRMs, savedEquipment, onSubmit }) {
+  const lifts = [...new Set(exercises.map(e => e.name))];
+  const [values, setValues] = useState(() => {
+    const init = {};
+    lifts.forEach(l => { init[l] = savedRMs[l] || ''; });
+    return init;
+  });
+  const [barbellWeight, setBarbellWeight] = useState(savedEquipment.barbellWeight);
+  const [showPlates, setShowPlates] = useState(false);
+  const [plates, setPlates] = useState(savedEquipment.availablePlates);
+  const [newPlate, setNewPlate] = useState('');
+
+  const addPlate = () => {
+    const v = parseFloat(newPlate);
+    if (!isNaN(v) && v > 0 && !plates.includes(v)) { setPlates(p => [...p, v]); setNewPlate(''); }
+  };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, overflowY: 'auto' }}>
-      <div style={{ background: '#161616', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, padding: 24, width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 24, fontWeight: 700, letterSpacing: 2 }}>MY PROFILE</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 20, cursor: 'pointer' }}>✕</button>
-        </div>
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '20px', marginTop: 16 }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>YOUR DETAILS</div>
+      <div style={{ fontSize: 13, color: '#666', marginBottom: 20 }}>1RM and bar for this workout</div>
 
-        <label style={S.label}>BARBELL WEIGHT (kg)</label>
-        <input type="number" value={local.barbellWeight} onChange={e => setLocal(p => ({ ...p, barbellWeight: parseFloat(e.target.value) || 20 }))} style={S.input} />
-
-        <label style={S.label}>AVAILABLE PLATES (kg per side)</label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {[...local.availablePlates].sort((a, b) => b - a).map(p => (
-            <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(0,212,170,0.08)', border: '1px solid rgba(0,212,170,0.3)', borderRadius: 6, padding: '4px 8px' }}>
-              <span style={{ color: '#00d4aa', fontSize: 13, fontWeight: 700 }}>{p}kg</span>
-              <button onClick={() => setLocal(pr => ({ ...pr, availablePlates: pr.availablePlates.filter(x => x !== p) }))}
-                style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input type="number" step="0.25" placeholder="e.g. 0.5" id="newPlateInput" style={{ ...S.input, margin: 0, flex: 1 }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                const val = parseFloat(e.target.value);
-                if (!isNaN(val) && val > 0 && !local.availablePlates.includes(val)) {
-                  setLocal(p => ({ ...p, availablePlates: [...p.availablePlates, val] }));
-                  e.target.value = '';
-                }
-              }
-            }}
-          />
-          <button onClick={() => {
-            const input = document.getElementById('newPlateInput');
-            const val = parseFloat(input.value);
-            if (!isNaN(val) && val > 0 && !local.availablePlates.includes(val)) {
-              setLocal(p => ({ ...p, availablePlates: [...p.availablePlates, val] }));
-              input.value = '';
-            }
-          }} style={{ padding: '10px 14px', background: 'rgba(0,212,170,0.12)', border: '1px solid #00d4aa', borderRadius: 8, color: '#00d4aa', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>+ Add</button>
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '20px 0 10px' }}>
-          <label style={{ ...S.label, margin: 0 }}>1RM VALUES (kg)</label>
-          <button onClick={addLift} style={{ padding: '4px 10px', background: 'rgba(0,212,170,0.12)', border: '1px solid #00d4aa', borderRadius: 6, color: '#00d4aa', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>+ Add lift</button>
-        </div>
-        {Object.entries(local.oneRMs).map(([lift, val]) => (
-          <div key={lift} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-            <div style={{ flex: 1, color: '#ccc', fontSize: 14 }}>{lift}</div>
-            <input type="number" value={val} onChange={e => updateRM(lift, e.target.value)} style={{ ...S.input, margin: 0, width: 80, textAlign: 'right' }} />
-            <button onClick={() => removeLift(lift)} style={{ background: 'none', border: 'none', color: '#c0392b', cursor: 'pointer', fontSize: 18 }}>×</button>
+      {/* 1RM fields */}
+      {lifts.map(lift => (
+        <div key={lift} style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#aaa', marginBottom: 5 }}>{lift.toUpperCase()} — 1RM</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input type="number" placeholder="kg" value={values[lift]}
+              onChange={e => setValues(v => ({ ...v, [lift]: e.target.value }))}
+              style={{ ...S.input, margin: 0, flex: 1, fontSize: 20, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700 }} />
+            <span style={{ color: '#666', fontSize: 14, minWidth: 20 }}>kg</span>
           </div>
-        ))}
+        </div>
+      ))}
 
-        <button onClick={() => { onSave(local); onClose(); }} style={{ marginTop: 20, width: '100%', padding: '14px', background: '#00d4aa', color: '#000', border: 'none', borderRadius: 8, fontWeight: 800, fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, letterSpacing: 2, cursor: 'pointer' }}>SAVE PROFILE</button>
+      {/* Divider */}
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', margin: '20px 0' }} />
+
+      {/* Bar weight */}
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ display: 'block', fontSize: 12, color: '#aaa', marginBottom: 5 }}>BARBELL WEIGHT</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input type="number" value={barbellWeight} onChange={e => setBarbellWeight(parseFloat(e.target.value) || 20)}
+            style={{ ...S.input, margin: 0, flex: 1, fontSize: 20, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700 }} />
+          <span style={{ color: '#666', fontSize: 14, minWidth: 20 }}>kg</span>
+        </div>
       </div>
+
+      {/* Plates — collapsed by default */}
+      <div onClick={() => setShowPlates(s => !s)} style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showPlates ? 10 : 0 }}>
+        <label style={{ fontSize: 12, color: '#aaa', cursor: 'pointer' }}>AVAILABLE PLATES</label>
+        <span style={{ fontSize: 12, color: '#00d4aa' }}>{showPlates ? '▲ hide' : '▼ edit'}</span>
+      </div>
+      {!showPlates && (
+        <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>{[...plates].sort((a,b) => b-a).join(', ')}kg</div>
+      )}
+      {showPlates && (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {[...plates].sort((a, b) => b - a).map(p => (
+              <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(0,212,170,0.08)', border: '1px solid rgba(0,212,170,0.3)', borderRadius: 6, padding: '4px 8px' }}>
+                <span style={{ color: '#00d4aa', fontSize: 13, fontWeight: 700 }}>{p}kg</span>
+                <button onClick={() => setPlates(prev => prev.filter(x => x !== p))} style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 14, padding: 0 }}>×</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+            <input type="number" step="0.25" placeholder="e.g. 0.5" value={newPlate} onChange={e => setNewPlate(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addPlate(); }}
+              style={{ ...S.input, margin: 0, flex: 1 }} />
+            <button onClick={addPlate} style={{ padding: '10px 14px', background: 'rgba(0,212,170,0.12)', border: '1px solid #00d4aa', borderRadius: 8, color: '#00d4aa', cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>+ Add</button>
+          </div>
+        </>
+      )}
+
+      <button
+        onClick={() => {
+          const rms = {};
+          lifts.forEach(l => { const v = parseFloat(values[l]); if (!isNaN(v) && v > 0) rms[l] = v; });
+          if (Object.keys(rms).length < lifts.length) return alert('Please enter all 1RM values');
+          onSubmit(rms, { barbellWeight, availablePlates: plates });
+        }}
+        style={{ marginTop: 20, width: '100%', padding: '14px', background: '#00d4aa', color: '#000', border: 'none', borderRadius: 10, fontWeight: 800, fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, letterSpacing: 2, cursor: 'pointer' }}
+      >
+        CALCULATE WEIGHTS
+      </button>
     </div>
   );
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
-  const [profile, setProfile] = useState(() => {
-    const saved = loadProfile();
-    // Strip tier from old saved profiles
-    if (saved) { delete saved.tier; return { ...DEFAULT_PROFILE, ...saved }; }
-    return DEFAULT_PROFILE;
-  });
-  const [showProfile, setShowProfile] = useState(false);
+  const [equipment, setEquipment] = useState(() => loadEquipment() || DEFAULT_EQUIPMENT);
   const [imagePreview, setImagePreview] = useState(null);
   const [imageDataUrl, setImageDataUrl] = useState(null);
-  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [phase, setPhase] = useState('idle');
+  const [workoutData, setWorkoutData] = useState(null);
+  const [oneRMs, setOneRMs] = useState({});
+  const [savedRMs, setSavedRMs] = useState(() => { try { return JSON.parse(localStorage.getItem('revl-rms-v1')) || {}; } catch { return {}; } });
+
   const cameraRef = useRef();
   const galleryRef = useRef();
 
-  const handleSaveProfile = useCallback(p => { setProfile(p); saveProfile(p); }, []);
   const handleImage = useCallback(file => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = e => { setImagePreview(e.target.result); setImageDataUrl(e.target.result); setResult(null); setError(null); };
+    reader.onload = e => { setImagePreview(e.target.result); setImageDataUrl(e.target.result); setPhase('idle'); setWorkoutData(null); setOneRMs({}); setError(null); };
     reader.readAsDataURL(file);
   }, []);
+
   const handleAnalyze = useCallback(async () => {
     if (!imageDataUrl) return;
     setLoading(true); setError(null);
-    try { setResult(await analyzeWorkout(imageDataUrl, profile)); }
-    catch (e) { setError(e.message); }
+    try {
+      const data = await readWorkout(imageDataUrl);
+      if (!data.exercises || data.exercises.length === 0) {
+        setError('No percentage-based exercises found in this workout.');
+        setLoading(false); return;
+      }
+      setWorkoutData(data);
+      setPhase('enter1rm');
+    } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, [imageDataUrl, profile]);
-  const handleReset = useCallback(() => { setImagePreview(null); setImageDataUrl(null); setResult(null); setError(null); }, []);
+  }, [imageDataUrl]);
+
+  const handleSubmitRMs = useCallback((rms, newEquipment) => {
+    const merged = { ...savedRMs, ...rms };
+    setSavedRMs(merged);
+    try { localStorage.setItem('revl-rms-v1', JSON.stringify(merged)); } catch {}
+    setEquipment(newEquipment);
+    saveEquipment(newEquipment);
+    setOneRMs(rms);
+    setPhase('results');
+  }, [savedRMs]);
+
+  const handleReset = useCallback(() => {
+    setImagePreview(null); setImageDataUrl(null);
+    setPhase('idle'); setWorkoutData(null); setOneRMs({}); setError(null);
+  }, []);
 
   return (
     <div style={{ minHeight: '100vh', background: '#0d0d0d', color: '#f0f0f0', paddingBottom: 60 }}>
       {/* Header */}
-      <div style={{ background: 'linear-gradient(135deg,#0d0d0d,#1a1a1a)', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '20px 20px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 10 }}>
-        <div>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 28, fontWeight: 800, letterSpacing: 3, color: '#00d4aa' }}>REVL LOAD</div>
-          <div style={{ fontSize: 12, color: '#555', letterSpacing: 1 }}>WORKOUT WEIGHT CALCULATOR</div>
-        </div>
-        <button onClick={() => setShowProfile(true)} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, padding: '8px 14px', color: '#ccc', cursor: 'pointer', fontFamily: "'Barlow Condensed',sans-serif", fontSize: 14, letterSpacing: 1 }}>⚙ PROFILE</button>
+      <div style={{ background: 'linear-gradient(135deg,#0d0d0d,#1a1a1a)', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '20px 20px 16px' }}>
+        <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 28, fontWeight: 800, letterSpacing: 3, color: '#00d4aa' }}>REVL LOAD</div>
+        <div style={{ fontSize: 12, color: '#555', letterSpacing: 1 }}>WORKOUT WEIGHT CALCULATOR</div>
       </div>
 
       <div style={{ padding: '20px 16px', maxWidth: 520, margin: '0 auto' }}>
-        {/* Profile strip */}
-        <div style={{ background: 'rgba(0,212,170,0.05)', border: '1px solid rgba(0,212,170,0.18)', borderRadius: 10, padding: '10px 16px', marginBottom: 20, display: 'flex', gap: 20, fontSize: 13 }}>
-          <span>Bar: <strong style={{ color: '#00d4aa' }}>{profile.barbellWeight}kg</strong></span>
-          <span>1RMs: <strong style={{ color: '#00d4aa' }}>{Object.keys(profile.oneRMs).length} lifts</strong></span>
-        </div>
-
         {/* Image preview */}
         {imagePreview && (
           <div style={{ border: '2px solid rgba(0,212,170,0.4)', borderRadius: 14, overflow: 'hidden', marginBottom: 12 }}>
@@ -454,17 +437,16 @@ function App() {
                 <span style={{ fontSize: 20 }}>🖼️</span> UPLOAD
               </button>
             </div>
-            <div style={{ textAlign: 'center', marginTop: 12, fontSize: 12, color: '#444' }}>or drag & drop here</div>
           </div>
         )}
 
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={e => handleImage(e.target.files[0])} />
         <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleImage(e.target.files[0])} />
 
-        {imagePreview && (
-          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+        {imagePreview && phase === 'idle' && (
+          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
             <button onClick={handleAnalyze} disabled={loading} style={{ flex: 1, padding: '14px', background: loading ? '#1a4a42' : '#00d4aa', color: loading ? '#00d4aa' : '#000', border: 'none', borderRadius: 10, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 800, letterSpacing: 2, cursor: loading ? 'default' : 'pointer' }}>
-              {loading ? 'ANALYSING...' : 'GET MY WEIGHTS'}
+              {loading ? 'READING WORKOUT...' : 'READ WORKOUT'}
             </button>
             <button onClick={handleReset} style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#888', cursor: 'pointer', fontSize: 18 }}>✕</button>
           </div>
@@ -472,18 +454,24 @@ function App() {
 
         {error && <div style={{ marginTop: 16, padding: 14, background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 10, color: '#e74c3c', fontSize: 13, wordBreak: 'break-word' }}>{error}</div>}
 
-        {result && (
+        {phase === 'enter1rm' && workoutData && (
+          <>
+            {workoutData.workoutNotes && <div style={{ fontSize: 13, color: '#888', marginTop: 16, fontStyle: 'italic', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>{workoutData.workoutNotes}</div>}
+            <OneRMForm exercises={workoutData.exercises} savedRMs={savedRMs} savedEquipment={equipment} onSubmit={handleSubmitRMs} />
+          </>
+        )}
+
+        {phase === 'results' && workoutData && (
           <div style={{ marginTop: 24 }}>
-            {result.workoutNotes && <div style={{ fontSize: 13, color: '#888', marginBottom: 16, fontStyle: 'italic', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>{result.workoutNotes}</div>}
-            {result.exercises?.length > 0
-              ? result.exercises.map((ex, i) => <ExerciseCard key={i} ex={ex} barbellKg={profile.barbellWeight} availablePlates={profile.availablePlates} />)
-              : <div style={{ color: '#888', textAlign: 'center', padding: 30, fontSize: 14 }}>No percentage-based exercises found in this workout.</div>
-            }
+            {workoutData.workoutNotes && <div style={{ fontSize: 13, color: '#888', marginBottom: 16, fontStyle: 'italic', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>{workoutData.workoutNotes}</div>}
+            {workoutData.exercises.map((ex, i) => (
+              <ExerciseCard key={i} ex={ex} oneRM={oneRMs[ex.name] || 100} barbellKg={equipment.barbellWeight} availablePlates={equipment.availablePlates} />
+            ))}
+            <button onClick={() => setPhase('enter1rm')} style={{ marginTop: 8, width: '100%', padding: '12px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 10, color: '#888', cursor: 'pointer', fontSize: 14 }}>← Edit details</button>
+            <button onClick={handleReset} style={{ marginTop: 8, width: '100%', padding: '12px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 10, color: '#888', cursor: 'pointer', fontSize: 14 }}>New workout</button>
           </div>
         )}
       </div>
-
-      {showProfile && <ProfileEditor profile={profile} onSave={handleSaveProfile} onClose={() => setShowProfile(false)} />}
     </div>
   );
 }
