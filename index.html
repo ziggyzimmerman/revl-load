@@ -244,49 +244,32 @@ function PlateRow({ label, kg, pct, barbellKg, availablePlates, onKgChange, onOn
 function ExerciseCard({ ex, barbellKg, availablePlates }) {
   const [expanded, setExpanded] = useState(true);
   const initKg = Array.isArray(ex.recommendedKg) ? ex.recommendedKg[0] : ex.recommendedKg;
-  const [waveKgs, setWaveKgs] = useState(ex.waveKgs && ex.waveKgs.length > 0 ? ex.waveKgs : [initKg]);
+  const initWave = ex.waveKgs && ex.waveKgs.length > 0 ? ex.waveKgs : [initKg];
 
-  // Parse percentages — expand ranges like "50-70%" → [50,55,60,65,70]% in 5% steps
-  // Also handle explicit lists like "60-70-75-85-90-92.5%"
-  const { wavePcts, expandedWaveKgs } = (() => {
-    if (!ex.prescription) return { wavePcts: waveKgs.map(() => 0), expandedWaveKgs: waveKgs };
-    const nums = (ex.prescription.match(/[\d.]+/g) || []).map(n => parseFloat(n));
-    if (!nums.length) return { wavePcts: waveKgs.map(() => 0), expandedWaveKgs: waveKgs };
-
-    let pctList;
-    // Detect a two-value range e.g. "50-70" where the intent is a ramp
-    // Heuristic: exactly 2 numbers and they differ by more than 10 percentage points
-    if (nums.length === 2 && (nums[1] - nums[0]) > 10) {
-      const [lo, hi] = nums;
-      pctList = [];
-      for (let p = lo; p <= hi + 0.001; p += 5) pctList.push(Math.round(p * 10) / 10);
-    } else {
-      pctList = nums;
-    }
-
+  // Parse percentages — expand ranges like "50-70%" into 5% steps
+  const parsePcts = (prescription, referenceWave) => {
+    if (!prescription) return { pcts: referenceWave.map(() => 0), kgs: referenceWave };
+    const nums = (prescription.match(/[\d.]+/g) || []).map(n => parseFloat(n));
+    if (!nums.length) return { pcts: referenceWave.map(() => 0), kgs: referenceWave };
+    let pctList = (nums.length === 2 && (nums[1] - nums[0]) > 10)
+      ? (() => { const r = []; for (let p = nums[0]; p <= nums[1] + 0.001; p += 5) r.push(Math.round(p * 10) / 10); return r; })()
+      : nums;
     const pcts = pctList.map(n => n / 100);
-    // Recompute waveKgs from the 1RM used for the first round
-    // Use the existing waveKgs[0] to back-calculate the 1RM, then apply all pcts
     const firstPct = pcts[0];
-    const impliedRM = firstPct > 0 ? waveKgs[0] / firstPct : null;
-    const newWaveKgs = pcts.map(p =>
-      impliedRM ? Math.round((impliedRM * p) / 2.5) * 2.5 : waveKgs[0]
-    );
+    const impliedRM = firstPct > 0 ? referenceWave[0] / firstPct : null;
+    const kgs = pcts.map(p => impliedRM ? Math.round((impliedRM * p) / 2.5) * 2.5 : referenceWave[0]);
+    return { pcts, kgs };
+  };
 
-    return { wavePcts: pcts, expandedWaveKgs: newWaveKgs };
-  })();
+  const { pcts: wavePcts, kgs: initExpanded } = parsePcts(ex.prescription, initWave);
+  const [waveKgs, setWaveKgs] = useState(initExpanded);
+  const isWave = waveKgs.length > 1;
 
-  // Initialise expanded wave on first render
-  const [waveKgsState, setWaveKgsState] = useState(() => expandedWaveKgs);
-
-  const updateWaveKg = (i, val) => setWaveKgsState(prev => prev.map((k, idx) => idx === i ? val : k));
+  const updateWaveKg = (i, val) => setWaveKgs(prev => prev.map((k, idx) => idx === i ? val : k));
   const updateOneRM = (i, newRM) => {
     const pct = wavePcts[i];
     if (pct > 0) updateWaveKg(i, Math.round((newRM * pct) / 2.5) * 2.5);
   };
-
-  const waveKgs = waveKgsState;
-  const isWave = waveKgs.length > 1;
 
   return (
     <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '16px 20px', marginBottom: 12 }}>
