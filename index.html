@@ -189,7 +189,12 @@ function EditableValue({ value, onChange, color, suffix, fontSize }) {
 // ─── PlateRow ─────────────────────────────────────────────────────────────────
 function PlateRow({ label, kg, pct, barbellKg, availablePlates, onKgChange, onOneRMChange }) {
   const pd = calculatePlates(kg, barbellKg, availablePlates);
-  const nudge = delta => onKgChange(Math.max(0, Math.round((kg + delta) * 100) / 100));
+  const nudge = delta => {
+    // Snap to nearest 2.5kg grid after nudge, so e.g. 38.75 + 2.5 → 40 not 41.25
+    const snapped = Math.round(kg / 2.5) * 2.5;
+    const next = delta > 0 ? snapped + 2.5 : snapped - 2.5;
+    onKgChange(Math.max(0, Math.round(next * 100) / 100));
+  };
   // pct stored as decimal e.g. 0.75 — implied 1RM = kg / pct
   const impliedRM = pct > 0 ? Math.round(kg / pct * 10) / 10 : null;
 
