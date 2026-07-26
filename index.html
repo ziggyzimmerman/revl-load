@@ -7,6 +7,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>REVL LOAD</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <meta name="apple-mobile-web-app-title" content="REVL Load" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&family=Barlow:wght@400;500&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -270,7 +274,7 @@ function OneRMForm({ exercises, savedRMs, savedEquipment, onSubmit }) {
     lifts.forEach(l => { init[l] = savedRMs[l] || ''; });
     return init;
   });
-  const [barbellWeight, setBarbellWeight] = useState(savedEquipment.barbellWeight);
+  const [barbellWeight, setBarbellWeight] = useState(savedEquipment.barbellWeight === 15 ? 15 : 20);
   const [showPlates, setShowPlates] = useState(false);
   const [plates, setPlates] = useState(savedEquipment.availablePlates);
   const [newPlate, setNewPlate] = useState('');
@@ -305,7 +309,13 @@ function OneRMForm({ exercises, savedRMs, savedEquipment, onSubmit }) {
       <div style={{ marginBottom: 14 }}>
         <label style={{ display: 'block', fontSize: 12, color: '#aaa', marginBottom: 5 }}>BARBELL WEIGHT</label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <input type="number" value={barbellWeight} onChange={e => setBarbellWeight(parseFloat(e.target.value) || 20)}
+          <div style={{ display: 'flex', gap: 10 }}>
+            {[20, 15].map(w => (
+              <button key={w} onClick={() => setBarbellWeight(w)} style={{ flex: 1, padding: '12px', background: barbellWeight === w ? '#00d4aa' : 'rgba(255,255,255,0.06)', border: `1px solid ${barbellWeight === w ? '#00d4aa' : 'rgba(255,255,255,0.15)'}`, borderRadius: 10, color: barbellWeight === w ? '#000' : '#ccc', cursor: 'pointer', fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700 }}>
+                {w}kg
+              </button>
+            ))}
+          </div>
             style={{ ...S.input, margin: 0, flex: 1, fontSize: 20, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700 }} />
           <span style={{ color: '#666', fontSize: 14, minWidth: 20 }}>kg</span>
         </div>
