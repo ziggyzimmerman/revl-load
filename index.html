@@ -7,10 +7,6 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>REVL LOAD</title>
-  <link rel="manifest" href="/manifest.json" />
-  <link rel="apple-touch-icon" href="/icon.svg" />
-  <meta name="apple-mobile-web-app-title" content="REVL Load" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&family=Barlow:wght@400;500&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -274,7 +270,7 @@ function OneRMForm({ exercises, savedRMs, savedEquipment, onSubmit }) {
     lifts.forEach(l => { init[l] = savedRMs[l] || ''; });
     return init;
   });
-  const [barbellWeight, setBarbellWeight] = useState(savedEquipment.barbellWeight === 15 ? 15 : 20);
+  const [barbellWeight, setBarbellWeight] = useState(savedEquipment.barbellWeight);
   const [showPlates, setShowPlates] = useState(false);
   const [plates, setPlates] = useState(savedEquipment.availablePlates);
   const [newPlate, setNewPlate] = useState('');
@@ -309,13 +305,7 @@ function OneRMForm({ exercises, savedRMs, savedEquipment, onSubmit }) {
       <div style={{ marginBottom: 14 }}>
         <label style={{ display: 'block', fontSize: 12, color: '#aaa', marginBottom: 5 }}>BARBELL WEIGHT</label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 10 }}>
-            {[20, 15].map(w => (
-              <button key={w} onClick={() => setBarbellWeight(w)} style={{ flex: 1, padding: '12px', background: barbellWeight === w ? '#00d4aa' : 'rgba(255,255,255,0.06)', border: `1px solid ${barbellWeight === w ? '#00d4aa' : 'rgba(255,255,255,0.15)'}`, borderRadius: 10, color: barbellWeight === w ? '#000' : '#ccc', cursor: 'pointer', fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700 }}>
-                {w}kg
-              </button>
-            ))}
-          </div>
+          <input type="number" value={barbellWeight} onChange={e => setBarbellWeight(parseFloat(e.target.value) || 20)}
             style={{ ...S.input, margin: 0, flex: 1, fontSize: 20, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700 }} />
           <span style={{ color: '#666', fontSize: 14, minWidth: 20 }}>kg</span>
         </div>
@@ -453,31 +443,23 @@ function App() {
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={e => handleImage(e.target.files[0])} />
         <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleImage(e.target.files[0])} />
 
-        {imagePreview && (phase === 'idle' || loading) && (
+        {imagePreview && phase === 'idle' && (
           <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
             <button onClick={handleAnalyze} disabled={loading} style={{ flex: 1, padding: '14px', background: loading ? '#1a4a42' : '#00d4aa', color: loading ? '#00d4aa' : '#000', border: 'none', borderRadius: 10, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 800, letterSpacing: 2, cursor: loading ? 'default' : 'pointer' }}>
               {loading ? 'READING WORKOUT...' : 'READ WORKOUT'}
             </button>
-            {!loading && <button onClick={handleReset} style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#888', cursor: 'pointer', fontSize: 18 }}>✕</button>}
+            <button onClick={handleReset} style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#888', cursor: 'pointer', fontSize: 18 }}>✕</button>
           </div>
         )}
 
         {error && <div style={{ marginTop: 16, padding: 14, background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 10, color: '#e74c3c', fontSize: 13, wordBreak: 'break-word' }}>{error}</div>}
 
-        {phase === 'enter1rm' && workoutData && (() => {
-          try {
-            return (
-              <>
-                {workoutData.workoutNotes && <div style={{ fontSize: 13, color: '#888', marginTop: 16, fontStyle: 'italic', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>{workoutData.workoutNotes}</div>}
-                <OneRMForm exercises={workoutData.exercises} savedRMs={savedRMs} savedEquipment={equipment} onSubmit={handleSubmitRMs} />
-              </>
-            );
-          } catch(e) {
-            return <div style={{ marginTop: 16, padding: 14, background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 10, color: '#e74c3c', fontSize: 13, wordBreak: 'break-word' }}>
-              Render error: {e.message}<br/><br/>Raw data: {JSON.stringify(workoutData)}
-            </div>;
-          }
-        })()}
+        {phase === 'enter1rm' && workoutData && (
+          <>
+            {workoutData.workoutNotes && <div style={{ fontSize: 13, color: '#888', marginTop: 16, fontStyle: 'italic', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>{workoutData.workoutNotes}</div>}
+            <OneRMForm exercises={workoutData.exercises} savedRMs={savedRMs} savedEquipment={equipment} onSubmit={handleSubmitRMs} />
+          </>
+        )}
 
         {phase === 'results' && workoutData && (
           <div style={{ marginTop: 24 }}>
